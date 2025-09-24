@@ -1,13 +1,26 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
+import smtplib
+from email.mime.text import MimeText
+from email.mime.multipart import MimeMultipart
+import threading
+import time
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'tu-clave-secreta-aqui'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'clave-secreta-robotica-2024')
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///tareas.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Configuración de email
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = os.environ.get('EMAIL_USER', 'test@gmail.com')
+app.config['MAIL_PASSWORD'] = os.environ.get('EMAIL_PASS', 'password')
+app.config['PROFESOR_EMAIL'] = os.environ.get('PROFESOR_EMAIL', 'profesor@tec.mx')
 
 db = SQLAlchemy(app)
 
@@ -16,6 +29,7 @@ class Usuario(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     matricula = db.Column(db.String(20), unique=True, nullable=False)
     nombre = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(100), nullable=True)
     password_hash = db.Column(db.String(200), nullable=False)
     es_admin = db.Column(db.Boolean, default=False)
     tareas = db.relationship('TareaUsuario', backref='usuario', lazy=True)
@@ -35,36 +49,177 @@ class TareaUsuario(db.Model):
     completada = db.Column(db.Boolean, default=False)
     fecha_completada = db.Column(db.DateTime, nullable=True)
 
+# Funciones de Email
+def enviar_email(destinatario, asunto, cuerpo):
+    """Enviar email de forma asíncrona"""
+    def enviar():
+        try:
+            if app.config['MAIL_USERNAME'] == 'test@gmail.com':
+                print(f"📧 [DEMO] Email a {destinatario}: {asunto}")
+                return
+                
+            msg = MimeMultipart()
+            msg['From'] = app.config['MAIL_USERNAME']
+            msg['To'] = destinatario
+            msg['Subject'] = asunto
+            
+            msg.attach(MimeText(cuerpo, 'html'))
+            
+            server = smtplib.SMTP(app.config['MAIL_SERVER'], app.config['MAIL_PORT'])
+            server.starttls()
+            server.login(app.config['MAIL_USERNAME'], app.config['MAIL_PASSWORD'])
+            text = msg.as_string()
+            server.sendmail(app.config['MAIL_USERNAME'], destinatario, text)
+            server.quit()
+            
+            print(f"✅ Email enviado a {destinatario}")
+        except Exception as e:
+            print(f"❌ Error enviando email: {e}")
+    
+    threading.Thread(target=enviar).start()
+
+def notificar_tarea_completada(estudiante_nombre, tarea_titulo):
+    """Notificar al profesor cuando un estudiante completa una tarea"""
+    asunto = f"🎉 Tarea Completada - {estudiante_nombre}"
+    cuerpo = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif;">
+        <div style="background: linear-gradient(45deg, #1e3a8a, #dc2626); color: white; padding: 20px; text-align: center;">
+            <h1>🤖 Sistema Tareas Robótica</h1>
+        </div>
+        <div style="padding: 20px;">
+            <h2>✅ Tarea Completada</h2>
+            <p><strong>Estudiante:</strong> {estudiante_nombre}</p>
+            <p><strong>Tarea:</strong> {tarea_titulo}</p>
+            <p><strong>Fecha:</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
+            
+            <div style="background: #d1f2eb; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <p>✅ El estudiante ha marcado esta tarea como completada.</p>
+                <p>📊 Puedes revisar el progreso en el panel de administración.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    enviar_email(app.config['PROFESOR_EMAIL'], asunto, cuerpo)
+
+def enviar_nueva_tarea_email(estudiante_email, estudiante_nombre, tarea_titulo, descripcion, dias_limite):
+    """Notificar a estudiante de nueva tarea asignada"""
+    asunto = f"📋 Nueva Tarea: {tarea_titulo}"
+    cuerpo = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif;">
+        <div style="background: linear-gradient(45deg, #1e3a8a, #dc2626); color: white; padding: 20px; text-align: center;">
+            <h1>🤖 Sistema Tareas Robótica</h1>
+        </div>
+        <div style="padding: 20px;">
+            <h2>📋 Nueva Tarea Asignada</h2>
+            <p>Hola <strong>{estudiante_nombre}</strong>,</p>
+            
+            <div style="background: #e3f2fd; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <h3 style="color: #1976d2;">{tarea_titulo}</h3>
+                <p><strong>Descripción:</strong> {descripcion or 'Sin descripción adicional'}</p>
+                <p><strong>Plazo:</strong> {dias_limite} días</p>
+            </div>
+            
+            <p>🚀 Recuerda marcar la tarea como completada cuando termines.</p>
+        </div>
+    </body>
+    </html>
+    """
+    enviar_email(estudiante_email, asunto, cuerpo)
+
+def notificar_recordatorio_tarea(estudiante_email, estudiante_nombre, tarea_titulo, dias_restantes):
+    """Enviar recordatorio a estudiante de tarea próxima a vencer"""
+    asunto = f"⏰ RECORDATORIO: {tarea_titulo}"
+    cuerpo = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif;">
+        <div style="background: #ffc107; color: black; padding: 20px; text-align: center;">
+            <h1>⏰ RECORDATORIO URGENTE</h1>
+        </div>
+        <div style="padding: 20px;">
+            <h2>🚨 Tarea próxima a vencer</h2>
+            <p>Hola <strong>{estudiante_nombre}</strong>,</p>
+            
+            <div style="background: #fff3cd; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 5px solid #ffc107;">
+                <h3>📋 {tarea_titulo}</h3>
+                <p><strong>⚠️ Vence en: {dias_restantes} días</strong></p>
+            </div>
+            
+            <p>📅 No olvides completar tu tarea a tiempo!</p>
+        </div>
+    </body>
+    </html>
+    """
+    enviar_email(estudiante_email, asunto, cuerpo)
+
+def verificar_recordatorios():
+    """Verificar tareas que necesitan recordatorio (2 días antes de vencer)"""
+    try:
+        fecha_limite = datetime.now() + timedelta(days=2)
+        
+        tareas_proximas = db.session.query(TareaUsuario, Tarea, Usuario).join(Tarea).join(Usuario).filter(
+            Tarea.fecha_limite.isnot(None),
+            Tarea.fecha_limite <= fecha_limite,
+            Tarea.fecha_limite > datetime.now(),
+            TareaUsuario.completada == False
+        ).all()
+        
+        for tarea_usuario, tarea, usuario in tareas_proximas:
+            if usuario.email:
+                dias_restantes = (tarea.fecha_limite - datetime.now()).days
+                notificar_recordatorio_tarea(usuario.email, usuario.nombre, tarea.titulo, dias_restantes)
+    except Exception as e:
+        print(f"❌ Error verificando recordatorios: {e}")
+
+def iniciar_verificador_recordatorios():
+    """Iniciar verificador de recordatorios"""
+    def verificar_periodicamente():
+        while True:
+            with app.app_context():
+                verificar_recordatorios()
+            time.sleep(3600)  # Cada hora
+    
+    threading.Thread(target=verificar_periodicamente, daemon=True).start()
+
 # Crear tablas y datos iniciales
 def init_db():
     with app.app_context():
         db.create_all()
         
-        # Crear usuario admin si no existe
+        # Admin
         if not Usuario.query.filter_by(matricula='ADMIN').first():
             admin = Usuario(
                 matricula='ADMIN',
-                nombre='Profesor Administrador',
+                nombre='Angel Monroy',
+                email=app.config['amonroy@tec.mx'],
                 password_hash=generate_password_hash('admin123'),
                 es_admin=True
             )
             db.session.add(admin)
         
-        # Crear estudiantes de ejemplo si no existen
         estudiantes_ejemplo = [
-            ('A0100200', 'Juan Pérez'),
-            ('A0100201', 'María García'),
-            ('A0100202', 'Carlos López'),
-            ('A0100203', 'Ana Martínez'),
-            ('A0100204', 'Luis González')
+            ('A01773550','Everardo'),
+            ('A01770860', 'Regina'),
+            ('A01773554', 'Camila'),
+            ('A01771236', 'Arturo'),
+            ('A01770705', 'Diego'),
+            ('A01770524', 'Charly'),
+            ('A01770979',  'JP'),
+            ('A01773315', 'Richie'), 
+            ('A01773495', 'Tello'),
+            ('A01773374', 'Ileana') 
         ]
         
         for matricula, nombre in estudiantes_ejemplo:
             if not Usuario.query.filter_by(matricula=matricula).first():
+                email = f"{matricula.lower()}@tec.mx"
                 estudiante = Usuario(
                     matricula=matricula,
                     nombre=nombre,
-                    password_hash=generate_password_hash(matricula.lower()),  # password = matrícula en minúsculas
+                    email=email,
+                    password_hash=generate_password_hash(matricula.lower()),
                     es_admin=False
                 )
                 db.session.add(estudiante)
@@ -117,7 +272,6 @@ def admin_dashboard():
     tareas = Tarea.query.all()
     estudiantes = Usuario.query.filter_by(es_admin=False).all()
     
-    # Estadísticas por tarea
     stats = []
     for tarea in tareas:
         total_asignados = TareaUsuario.query.filter_by(tarea_id=tarea.id).count()
@@ -152,7 +306,6 @@ def crear_tarea():
         fecha_limite = request.form['fecha_limite']
         estudiantes_ids = request.form.getlist('estudiantes')
         
-        # Crear tarea
         tarea = Tarea(
             titulo=titulo,
             descripcion=descripcion,
@@ -161,13 +314,21 @@ def crear_tarea():
         db.session.add(tarea)
         db.session.flush()
         
-        # Asignar a estudiantes
         for estudiante_id in estudiantes_ids:
             asignacion = TareaUsuario(usuario_id=int(estudiante_id), tarea_id=tarea.id)
             db.session.add(asignacion)
         
         db.session.commit()
-        flash('Tarea creada exitosamente')
+        
+        # Enviar emails a estudiantes
+        if fecha_limite:
+            estudiantes_asignados = Usuario.query.filter(Usuario.id.in_(estudiantes_ids)).all()
+            for estudiante in estudiantes_asignados:
+                if estudiante.email:
+                    dias_limite = (datetime.strptime(fecha_limite, '%Y-%m-%d') - datetime.now()).days
+                    enviar_nueva_tarea_email(estudiante.email, estudiante.nombre, titulo, descripcion, dias_limite)
+        
+        flash(f'Tarea creada y enviada a {len(estudiantes_ids)} estudiantes por email')
         return redirect(url_for('admin_dashboard'))
     
     estudiantes = Usuario.query.filter_by(es_admin=False).all()
@@ -188,7 +349,15 @@ def completar_tarea(tarea_usuario_id):
     tarea_usuario.fecha_completada = datetime.utcnow() if tarea_usuario.completada else None
     
     db.session.commit()
-    flash('Tarea actualizada')
+    
+    if tarea_usuario.completada:
+        usuario = Usuario.query.get(session['user_id'])
+        tarea = Tarea.query.get(tarea_usuario.tarea_id)
+        notificar_tarea_completada(usuario.nombre, tarea.titulo)
+        flash('✅ Tarea completada y profesor notificado')
+    else:
+        flash('Tarea marcada como pendiente')
+    
     return redirect(url_for('student_dashboard'))
 
 @app.route('/admin/reporte/<int:estudiante_id>')
@@ -210,7 +379,7 @@ def reporte_estudiante(estudiante_id):
                          completadas=completadas,
                          porcentaje=porcentaje)
 
-# Crear templates HTML (se guardarán en carpeta templates/)
+# Templates HTML
 templates = {
     'base.html': '''<!DOCTYPE html>
 <html lang="es">
@@ -223,7 +392,7 @@ templates = {
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container">
-            <a class="navbar-brand" href="#">🤖 Sistema de Tareas Robótica</a>
+            <a class="navbar-brand" href="#">🤖 Sistema Tareas - Proyecto Robótica</a>
             {% if session.user_id %}
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text me-3">{{ session.nombre }}</span>
@@ -253,7 +422,6 @@ templates = {
 </html>''',
     
     'login.html': '''{% extends "base.html" %}
-
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-md-6">
@@ -266,12 +434,12 @@ templates = {
                     <div class="mb-3">
                         <label for="matricula" class="form-label">Matrícula</label>
                         <input type="text" class="form-control" id="matricula" name="matricula" required>
-                        <small class="form-text text-muted">Estudiantes usen su matrícula, Admin use "ADMIN"</small>
+                        <small class="form-text text-muted">Ever, Ramos, Ileana, JP, Tello, Camila, Diego, Regina | Admin: ADMIN</small>
                     </div>
                     <div class="mb-3">
                         <label for="password" class="form-label">Contraseña</label>
                         <input type="password" class="form-control" id="password" name="password" required>
-                        <small class="form-text text-muted">Estudiantes: su matrícula en minúsculas, Admin: admin123</small>
+                        <small class="form-text text-muted">Estudiantes: matrícula en minúsculas | Profesor: admin123</small>
                     </div>
                     <button type="submit" class="btn btn-primary w-100">Ingresar</button>
                 </form>
@@ -282,7 +450,6 @@ templates = {
 {% endblock %}''',
     
     'admin_dashboard.html': '''{% extends "base.html" %}
-
 {% block content %}
 <div class="row">
     <div class="col-md-12">
@@ -293,7 +460,7 @@ templates = {
         
         <div class="row">
             <div class="col-md-8">
-                <h4>Estadísticas por Tarea</h4>
+                <h4>📊 Estadísticas por Tarea</h4>
                 <div class="table-responsive">
                     <table class="table table-striped">
                         <thead>
@@ -328,13 +495,13 @@ templates = {
             </div>
             
             <div class="col-md-4">
-                <h4>Reportes por Estudiante</h4>
+                <h4>👥 Reportes por Estudiante</h4>
                 <div class="list-group">
                     {% for estudiante in estudiantes %}
                     <a href="{{ url_for('reporte_estudiante', estudiante_id=estudiante.id) }}" 
                        class="list-group-item list-group-item-action">
                         {{ estudiante.nombre }}
-                        <small class="text-muted d-block">{{ estudiante.matricula }}</small>
+                        <small class="text-muted d-block">{{ estudiante.matricula }} - {{ estudiante.email }}</small>
                     </a>
                     {% endfor %}
                 </div>
@@ -345,11 +512,10 @@ templates = {
 {% endblock %}''',
     
     'student_dashboard.html': '''{% extends "base.html" %}
-
 {% block content %}
 <div class="row">
     <div class="col-md-12">
-        <h2>Mis Tareas</h2>
+        <h2>📋 Mis Tareas</h2>
         
         <div class="row">
             {% for tarea_usuario, tarea in mis_tareas %}
@@ -362,17 +528,17 @@ templates = {
                         </span>
                     </div>
                     <div class="card-body">
-                        <p class="card-text">{{ tarea.descripcion }}</p>
+                        <p class="card-text">{{ tarea.descripcion or 'Sin descripción adicional' }}</p>
                         {% if tarea.fecha_limite %}
-                        <p class="text-muted"><small>Fecha límite: {{ tarea.fecha_limite.strftime('%d/%m/%Y') }}</small></p>
+                        <p class="text-muted"><small>📅 Fecha límite: {{ tarea.fecha_limite.strftime('%d/%m/%Y') }}</small></p>
                         {% endif %}
                         {% if tarea_usuario.completada %}
-                        <p class="text-success"><small>Completada el: {{ tarea_usuario.fecha_completada.strftime('%d/%m/%Y %H:%M') }}</small></p>
+                        <p class="text-success"><small>✅ Completada el: {{ tarea_usuario.fecha_completada.strftime('%d/%m/%Y %H:%M') }}</small></p>
                         {% endif %}
                         
                         <a href="{{ url_for('completar_tarea', tarea_usuario_id=tarea_usuario.id) }}" 
                            class="btn {% if tarea_usuario.completada %}btn-outline-warning{% else %}btn-success{% endif %}">
-                            {% if tarea_usuario.completada %}Marcar como Pendiente{% else %}Marcar como Completada{% endif %}
+                            {% if tarea_usuario.completada %}Marcar Pendiente{% else %}✅ Marcar Completada{% endif %}
                         </a>
                     </div>
                 </div>
@@ -382,7 +548,7 @@ templates = {
         
         {% if not mis_tareas %}
         <div class="alert alert-info">
-            No tienes tareas asignadas aún.
+            📭 No tienes tareas asignadas aún.
         </div>
         {% endif %}
     </div>
@@ -390,13 +556,12 @@ templates = {
 {% endblock %}''',
     
     'crear_tarea.html': '''{% extends "base.html" %}
-
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-md-8">
         <div class="card">
             <div class="card-header">
-                <h3>Crear Nueva Tarea</h3>
+                <h3>➕ Crear Nueva Tarea</h3>
             </div>
             <div class="card-body">
                 <form method="POST">
@@ -411,8 +576,8 @@ templates = {
                     </div>
                     
                     <div class="mb-3">
-                        <label for="fecha_limite" class="form-label">Fecha Límite (Opcional)</label>
-                        <input type="date" class="form-control" id="fecha_limite" name="fecha_limite">
+                        <label for="fecha_limite" class="form-label">Fecha Límite</label>
+                        <input type="date" class="form-control" id="fecha_limite" name="fecha_limite" required>
                     </div>
                     
                     <div class="mb-3">
@@ -425,6 +590,7 @@ templates = {
                                            name="estudiantes" value="{{ estudiante.id }}" id="est{{ estudiante.id }}">
                                     <label class="form-check-label" for="est{{ estudiante.id }}">
                                         {{ estudiante.nombre }} ({{ estudiante.matricula }})
+                                        <small class="text-muted d-block">{{ estudiante.email }}</small>
                                     </label>
                                 </div>
                             </div>
@@ -434,7 +600,7 @@ templates = {
                     
                     <div class="d-flex justify-content-between">
                         <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary">Cancelar</a>
-                        <button type="submit" class="btn btn-primary">Crear Tarea</button>
+                        <button type="submit" class="btn btn-primary">✉️ Crear y Enviar por Email</button>
                     </div>
                 </form>
             </div>
@@ -444,97 +610,9 @@ templates = {
 {% endblock %}''',
     
     'reporte_estudiante.html': '''{% extends "base.html" %}
-
 {% block content %}
 <div class="row">
     <div class="col-md-12">
         <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2>Reporte: {{ estudiante.nombre }}</h2>
-            <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary">Volver</a>
-        </div>
-        
-        <div class="row mb-4">
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h5 class="card-title">{{ total_tareas }}</h5>
-                        <p class="card-text">Tareas Asignadas</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h5 class="card-title text-success">{{ completadas }}</h5>
-                        <p class="card-text">Completadas</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h5 class="card-title text-warning">{{ total_tareas - completadas }}</h5>
-                        <p class="card-text">Pendientes</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <h5 class="card-title">{{ "%.0f"|format(porcentaje) }}%</h5>
-                        <p class="card-text">Progreso</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <h4>Detalle de Tareas</h4>
-        <div class="table-responsive">
-            <table class="table table-striped">
-                <thead>
-                    <tr>
-                        <th>Tarea</th>
-                        <th>Estado</th>
-                        <th>Fecha Límite</th>
-                        <th>Fecha Completada</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for tarea_usuario, tarea in tareas_estudiante %}
-                    <tr>
-                        <td>
-                            <strong>{{ tarea.titulo }}</strong>
-                            {% if tarea.descripcion %}
-                            <br><small class="text-muted">{{ tarea.descripcion }}</small>
-                            {% endif %}
-                        </td>
-                        <td>
-                            <span class="badge {% if tarea_usuario.completada %}bg-success{% else %}bg-warning{% endif %}">
-                                {% if tarea_usuario.completada %}✓ Completada{% else %}⏳ Pendiente{% endif %}
-                            </span>
-                        </td>
-                        <td>{{ tarea.fecha_limite.strftime('%d/%m/%Y') if tarea.fecha_limite else 'Sin límite' }}</td>
-                        <td>{{ tarea_usuario.fecha_completada.strftime('%d/%m/%Y %H:%M') if tarea_usuario.fecha_completada else '-' }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>
-{% endblock %}'''
-}
-
-if __name__ == '__main__':
-    # Crear carpeta templates si no existe
-    import os
-    if not os.path.exists('templates'):
-        os.makedirs('templates')
-    
-    # Guardar templates
-    for filename, content in templates.items():
-        with open(f'templates/{filename}', 'w', encoding='utf-8') as f:
-            f.write(content)
-    
-    init_db()
-    app.run(debug=True)
+            <h2>📊 Reporte: {{ estudiante.nombre }}</h2>
+            <a href="{{ url_for('admin_dashboar
