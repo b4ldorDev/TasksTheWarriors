@@ -183,7 +183,6 @@ def iniciar_verificador_recordatorios():
     
     threading.Thread(target=verificar_periodicamente, daemon=True).start()
 
-# Crear tablas y datos iniciales
 def init_db():
     with app.app_context():
         db.create_all()
@@ -193,8 +192,8 @@ def init_db():
             admin = Usuario(
                 matricula='ADMIN',
                 nombre='Angel Monroy',
-                email=app.config['amonroy@tec.mx'],
-                password_hash=generate_password_hash('admin123'),
+                email='amonroy@tec.mx',
+                password_hash=generate_password_hash('angelMonroy'),
                 es_admin=True
             )
             db.session.add(admin)
@@ -609,10 +608,115 @@ templates = {
 </div>
 {% endblock %}''',
     
+# Add this to complete your templates dictionary - replace the incomplete 'reporte_estudiante.html' section
+
     'reporte_estudiante.html': '''{% extends "base.html" %}
 {% block content %}
 <div class="row">
     <div class="col-md-12">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h2>📊 Reporte: {{ estudiante.nombre }}</h2>
-            <a href="{{ url_for('admin_dashboar
+            <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary">← Volver al Panel</a>
+        </div>
+        
+        <div class="row mb-4">
+            <div class="col-md-4">
+                <div class="card bg-light">
+                    <div class="card-body text-center">
+                        <h4 class="card-title">👤 Información del Estudiante</h4>
+                        <p class="card-text">
+                            <strong>Nombre:</strong> {{ estudiante.nombre }}<br>
+                            <strong>Matrícula:</strong> {{ estudiante.matricula }}<br>
+                            <strong>Email:</strong> {{ estudiante.email }}
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-8">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="card bg-primary text-white">
+                            <div class="card-body text-center">
+                                <h5>📋 Total Tareas</h5>
+                                <h3>{{ total_tareas }}</h3>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card bg-success text-white">
+                            <div class="card-body text-center">
+                                <h5>✅ Completadas</h5>
+                                <h3>{{ completadas }}</h3>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card bg-info text-white">
+                            <div class="card-body text-center">
+                                <h5>📊 Progreso</h5>
+                                <h3>{{ "%.0f"|format(porcentaje) }}%</h3>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row">
+            <div class="col-md-12">
+                <h4>📋 Detalle de Tareas</h4>
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Tarea</th>
+                                <th>Descripción</th>
+                                <th>Fecha Límite</th>
+                                <th>Estado</th>
+                                <th>Fecha Completada</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for tarea_usuario, tarea in tareas_estudiante %}
+                            <tr class="{% if tarea_usuario.completada %}table-success{% else %}table-warning{% endif %}">
+                                <td><strong>{{ tarea.titulo }}</strong></td>
+                                <td>{{ tarea.descripcion or 'Sin descripción' }}</td>
+                                <td>
+                                    {% if tarea.fecha_limite %}
+                                        {{ tarea.fecha_limite.strftime('%d/%m/%Y') }}
+                                    {% else %}
+                                        <em>Sin límite</em>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if tarea_usuario.completada %}
+                                        <span class="badge bg-success">✅ Completada</span>
+                                    {% else %}
+                                        <span class="badge bg-warning">⏳ Pendiente</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if tarea_usuario.fecha_completada %}
+                                        {{ tarea_usuario.fecha_completada.strftime('%d/%m/%Y %H:%M') }}
+                                    {% else %}
+                                        <em>-</em>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                
+                {% if not tareas_estudiante %}
+                <div class="alert alert-info">
+                    📭 Este estudiante no tiene tareas asignadas.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}'''
+}
